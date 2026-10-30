@@ -135,7 +135,7 @@ def tasks(uuid=None, include_items=False, **kwargs):  # noqa: C901
         - `is_repeating_template == True`, only include templates.
         - `is_repeating_template == None`, include both kind of tasks.
 
-    next_instance_start_date : same options as start_date, signifies the date \
+    next_instance_start_date : same options as start_date, signifies the date
         Things will create the next instance of a repeating to-do (templates only)
 
     last : str, optional
@@ -545,12 +545,11 @@ def upcoming(**kwargs):
     """
     Read Upcoming tasks into dicts.
 
-    Repeating to-dos are included once Things has scheduled their next
-    instance, dated by `next_instance_start_date`, as in the app's
-    Upcoming list.
+    The output aims to be in the same order as Upcoming in Things.app.
+    Repeating to-dos use `next_instance_start_date` instead of `start_date`.
 
     Note: unscheduled tasks with a deadline are not included here.
-    See the `things.api.deadline` function instead.
+    See the `things.api.deadlines` function instead.
 
     For details on parameters, see `things.api.tasks`.
     """
@@ -568,7 +567,13 @@ def upcoming(**kwargs):
         return scheduled + repeating
 
     result = [*scheduled, *repeating]
-    result.sort(key=lambda task: task["start_date"] or task["next_instance_start_date"])
+    result.sort(
+        key=lambda task: (
+            task["start_date"] or task["next_instance_start_date"],
+            task["today_index"],
+            task["index"],
+        )
+    )
     return result
 
 

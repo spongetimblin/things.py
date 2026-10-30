@@ -48,8 +48,7 @@ TRASHED_TO_FILTER = {True: "trashed = 1", False: "trashed = 0"}
 
 # A repeating to-do is stored as a template row carrying a recurrence rule;
 # Things creates each instance from it. See `things.api.tasks`.
-# Code written by Claude Fable 5.1 (Anthropic).
-REPEATING_TEMPLATE_TO_FILTER: dict[bool | None, str] = {
+REPEATING_TEMPLATE_TO_FILTER = {
     True: "rt1_recurrenceRule IS NOT NULL",
     False: "rt1_recurrenceRule IS NULL",
 }
@@ -112,11 +111,8 @@ DATE_STOP = "stopDate"  # REAL: Unix date & time, UTC
 # See `convert_isodate_sql_expression_to_thingsdate` for details.
 DATE_DEADLINE = "deadline"  # INTEGER: YYYYYYYYYYYMMMMDDDDD0000000, in binary
 DATE_START = "startDate"  # INTEGER: YYYYYYYYYYYMMMMDDDDD0000000, in binary
-# Set on repeating templates only: the date Things creates the next instance.
-# Things stores 0001-01-01 instead of NULL when there is none; no real Things
-# date is below year 2, so anything under THINGSDATE_YEAR_2 is that placeholder.
-DATE_NEXT_INSTANCE_START = "rt1_nextInstanceStartDate"  # INTEGER: Things date
-THINGSDATE_YEAR_2 = 2 << 16
+# INTEGER: YYYYYYYYYYYMMMMDDDDD0000000, in binary; set on repeating templates only
+DATE_NEXT_INSTANCE_START = "rt1_nextInstanceStartDate"
 # See 'convert_thingstime_sql_expression_to_isotime' for details.
 REMINDER_TIME = "reminderTime"  # INTEGER: hhhhhmmmmmm00000000000000000000, in binary
 
@@ -247,7 +243,11 @@ class Database:
         validate("trashed", trashed, [None] + list(TRASHED_TO_FILTER))
         validate("type", type, [None] + list(TYPE_TO_FILTER))
         validate("context_trashed", context_trashed, [None, True, False])
-        validate("is_repeating_template", is_repeating_template, [None, True, False])
+        validate(
+            "is_repeating_template",
+            is_repeating_template,
+            [None] + list(REPEATING_TEMPLATE_TO_FILTER),
+        )
         validate("index", index, list(INDICES))
         validate_offset("last", last)
 
@@ -264,7 +264,11 @@ class Database:
         trashed_filter: str = TRASHED_TO_FILTER.get(trashed, "")  # type: ignore
         type_filter: str = TYPE_TO_FILTER.get(type, "")  # type: ignore
         repeating_template_filter: str = REPEATING_TEMPLATE_TO_FILTER.get(
-            is_repeating_template, ""
+            is_repeating_template,  # type: ignore
+            "",
+        )
+        next_instance_start_date_filter = make_thingsdate_filter(
+            f"TASK.{DATE_NEXT_INSTANCE_START}", next_instance_start_date
         )
 
         # Sometimes a task is _not_ set to trashed, but its context
@@ -300,7 +304,7 @@ class Database:
             {make_filter("TASK.deadlineSuppressionDate", deadline_suppressed)}
             {make_filter("TAG.title", tag)}
             {make_thingsdate_filter(f"TASK.{DATE_START}", start_date)}
-            {make_thingsdate_filter(f"TASK.{DATE_NEXT_INSTANCE_START}", next_instance_start_date)}
+            {next_instance_start_date_filter}
             {make_unixtime_filter(f"TASK.{DATE_STOP}", stop_date)}
             {make_thingsdate_filter(f"TASK.{DATE_DEADLINE}", deadline)}
             {make_unixtime_range_filter(f"TASK.{DATE_CREATED}", last)}
@@ -536,10 +540,8 @@ def make_tasks_sql_query(where_predicate=None, order_predicate=None):
     reminder_time_expression = convert_thingstime_sql_expression_to_isotime(
         f"TASK.{REMINDER_TIME}"
     )
-    next_instance_start_date = f"TASK.{DATE_NEXT_INSTANCE_START}"
     next_instance_start_date_expression = convert_thingsdate_sql_expression_to_isodate(
-        f"CASE WHEN {next_instance_start_date} >= {THINGSDATE_YEAR_2}"
-        f" THEN {next_instance_start_date} END"
+        null_if_unset_thingsdate(f"TASK.{DATE_NEXT_INSTANCE_START}")
     )
 
     return f"""
@@ -1139,6 +1141,36 @@ def make_unixtime_range_filter(date_column: str, offset) -> str:
 def match_date(value):
     """Return a match object if value is an ISO 8601 date str."""
     return re.fullmatch(r"(=|==|<|<=|>|>=)?(\d{4}-\d{2}-\d{2})", value)
+
+
+def null_if_unset_thingsdate(sql_expression: str) -> str:
+    """
+    Return SQL expression as string.
+
+    It is NULL when the "Things date" is unset, else the Things date itself.
+    Things stores 0001-01-01 instead of NULL in some date columns, such as
+    `rt1_nextInstanceStartDate` when a repeating to-do has no next instance.
+    Sometimes bits below the day field are set as well (69769 rather than
+    69760), so any date in year 1 counts as unset.
+
+    Parameters
+    ----------
+    sql_expression : str
+        A sql expression pointing to a "Things date" integer in
+        format YYYYYYYYYYYMMMMDDDDD0000000, in binary.
+        See: `convert_isodate_sql_expression_to_thingsdate` for details.
+
+    Example
+    -------
+    >>> null_if_unset_thingsdate('rt1_nextInstanceStartDate')
+    'CASE WHEN rt1_nextInstanceStartDate >= 135296 \
+    THEN rt1_nextInstanceStartDate END'
+    """
+    first_real_thingsdate = isodate_to_yyyyyyyyyyymmmmddddd("0002-01-01")
+    return (
+        f"CASE WHEN {sql_expression} >= {first_real_thingsdate}"
+        f" THEN {sql_expression} END"
+    )
 
 
 def prettify_sql(sql_query):
